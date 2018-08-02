@@ -8,6 +8,11 @@ import matplotlib.pyplot as plt
 from tensorflow.contrib import rnn
 from sklearn import metrics
 import time
+from functools import reduce
+from operator import mul
+from tensorflow.contrib import signal
+
+import graph_save as gs
 
 FLAGS = tf.flags.FLAGS
 SEED = 1
@@ -28,7 +33,8 @@ initial_logs_dir = "/home/sbie/github/VAD_Project_test/VAD_LSTM/logs_LSTM"
 ckpt_name = "/LSTM"
 
 reset = True  # remove all existed logs and initialize log directories
-device = "/gpu:0"
+device = '/gpu:3'
+
 mode = 'test'
 if mode is 'test':
     reset = False
@@ -53,7 +59,7 @@ target_delay = 5  # target_delay default = 19
 u = 9  # u default = 9
 eval_th = 0.6
 th = 0.5
-lstm_cell_size = 256
+lstm_cell_size = 128
 num_layers = 3
 
 model_config = {'target_delay': target_delay, "u": u}
@@ -71,7 +77,7 @@ bdnn_winlen = (((target_delay-1) / u) * 2) + 3
 # bdnn_inputsize = int(bdnn_winlen * num_features)
 bdnn_inputsize = num_features
 bdnn_outputsize = 2#int(bdnn_winlen)
-initLr = 1e-5
+initLr = 0.01
 scope_name = 'RNN_scope'
 eval_type = 2
 
@@ -147,64 +153,16 @@ def affine_transform(x, output_dim, name=None):
     return tf.matmul(x, w) + b
 
 
-def rnn_in(inputs, batch_num, seq_size,delay):
+def rnn_in(inputs, seq_size, delay):
 
-    batch_num = int(batch_num)
     seq_size = int(seq_size)
     delay = int(delay)
-    temp1 = tf.reshape(inputs,[-1,num_features])
-    temp2 = tf.reshape(temp1[0:batch_size,:],[batch_num,seq_size,num_features])
-    # temp3 = tf.zeros([batch_num,delay,num_features], tf.float32)
-    temp3 = temp2[1:batch_num,0:delay,:]
-    temp4 = tf.reshape(temp1[batch_size:batch_size+delay,:],[-1,delay,num_features])
-    temp5 = tf.concat([temp3,temp4],0)
-    return tf.concat([temp2,temp5],1)
-
-
-def inference(inputs, keep_prob, is_training=True, reuse=None):
-
-    # initialization
-    # c1_out = affine_transform(inputs, num_hidden_1, name="hidden_1")
-    # inputs_shape = inputs.get_shape().as_list()
-    with tf.variable_scope(scope_name):
-        # print(inputs.get_shape().as_list())
-        in_rnn = rnn_in(inputs, batch_num, seq_size, target_delay)
-        # in_rnn = tf.reshape(inputs,[-1, seq_size+target_delay, num_features])
-        stacked_rnn = []
-        for iiLyr in range(num_layers):
-            stacked_rnn.append(tf.nn.rnn_cell.LSTMCell(num_units=lstm_cell_size, state_is_tuple=True))
-        MultiLyr_cell = tf.nn.rnn_cell.MultiRNNCell(cells=stacked_rnn, state_is_tuple=True)
-
-        outputs, _state = tf.nn.dynamic_rnn(MultiLyr_cell, in_rnn, time_major=False, dtype=tf.float32)
-        outputs = tf.reshape(outputs[:, 0:seq_size, :],[-1,lstm_cell_size])
-
-        outputs = tf.nn.dropout(outputs, keep_prob=keep_prob)
-
-        # # h1_out = affine_transform(inputs, num_hidden_1, name="hidden_1")
-        # lh1_out = utils.batch_norm_affine_transform(outputs, num_hidden_1, name="lhidden_1", decay=decay,
-        #                                             is_training=is_training)
-        # lh1_out = tf.nn.relu(lh1_out)
-        # lh1_out = tf.nn.dropout(lh1_out, keep_prob=keep_prob)
-
-        logits = affine_transform(outputs, bdnn_outputsize, name="output1")
-        # logits = tf.sigmoid(logits)
-        logits = tf.reshape(logits, [-1, int(bdnn_outputsize)])
-
-    return logits
-
-
-def train(loss_val, var_list):
-
-    lrDecayRate = .95
-    lrDecayFreq = 200
-
-    global_step = tf.Variable(0, trainable=False)
-    lr = tf.train.exponential_decay(initLr, global_step, lrDecayFreq, lrDecayRate, staircase=True)
-
-    optimizer = tf.train.AdamOptimizer(lr)
-    grads = optimizer.compute_gradients(loss_val, var_list=var_list)
-
-    return optimizer.apply_gradients(grads, global_step=global_step)
+    temp1 = tf.reshape(inputs, [-1, num_features])
+    temp2 = tf.reshape(temp1[0:-2*delay, :], [-1, seq_size, num_features])
+    temp3 = temp2[1:, 0:2*delay, :]
+    temp4 = tf.reshape(temp1[-2*delay:, :], [-1, 2*delay, num_features])
+    temp5 = tf.concat([temp3, temp4], 0)
+    return tf.concat([temp2, temp5], 1)
 
 
 def summary_generation(eval_file_dir):
@@ -254,10 +212,7 @@ def full_evaluation(m_eval, sess_eval, batch_size_eval, eval_file_dir, summary_w
         eval_output_dir = eval_file_dir + noise_name + '/Labels'
         ##########################################
 
-
         eval_calc_dir = eval_file_dir + noise_name + '/test_result' # for Final layer information saving
-
-
 
         ##########################################
         eval_data_set = dr.DataReader(eval_input_dir, eval_output_dir, norm_dir, target_delay=target_delay, u=u, name="eval")
@@ -414,18 +369,20 @@ class Model(object):
     def __init__(self, is_training=True):
 
         self.keep_probability = tf.placeholder(tf.float32, name="keep_probabilty")
-        self.inputs = inputs = tf.placeholder(tf.float32, shape=[batch_size + target_delay, bdnn_inputsize],
-                                              name="inputs")
-        self.labels = labels = tf.placeholder(tf.float32, shape=[batch_size, bdnn_outputsize], name="labels")
-        # self.inputs = inputs = tf.placeholder(tf.float32, shape=[None, bdnn_inputsize],
-        #                                       name="inputs")
-        # self.labels = labels = tf.placeholder(tf.float32, shape=[None, bdnn_outputsize], name="labels")
-        # set inference graph
-        self.logits = logits = inference(inputs, self.keep_probability, is_training=is_training)  # (batch_size, bdnn_outputsize)
-        # set objective function
-        # self.cost = cost = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=labels, logits=logits))
+        self.inputs = inputs = tf.placeholder(tf.float32, shape=[None, bdnn_inputsize],name="inputs")
+        self.labels = labels = tf.placeholder(tf.float32, shape=[None, bdnn_outputsize], name="labels")
+
+        lrDecayRate = 0.96
+        lrDecayFreq = 20000
+
+        self.global_step = tf.Variable(0, trainable=False)
+        self.lr = tf.train.exponential_decay(learning_rate, self.global_step, lrDecayFreq, lrDecayRate, staircase=True)
+
+        self.logits = logits = self.inference(inputs, self.keep_probability, is_training=is_training)  # (batch_size, bdnn_outputsize)
+
         pred = tf.argmax(logits, axis=1, name="prediction")
-        softpred = tf.identity(logits[:, 1], name="soft_pred")
+        self.softpred = tf.identity(pred, name="soft_pred")
+        self.pred = pred
 
         pred = tf.cast(pred, tf.int32)
         truth = tf.cast(labels[:, 1], tf.int32)
@@ -436,26 +393,54 @@ class Model(object):
 
         self.accuracy = tf.reduce_mean(tf.cast(tf.equal(pred, truth), tf.float32))
         self.cost = cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=labels, logits = logits))
-        # self.cost = cost = tf.reduce_mean(tf.square(labels - logits))
-        # fpr, tpr, thresholds = metrics.roc_curve(np.array(truth), np.array(pred), pos_label=2)
-        # self.auc = metrics.auc(fpr, tpr)
-        # cost = tf.nn.softmax_cross_entropy_with_logits(labels=labels, logits=logits)
-        # cost = tf.reduce_sum(tf.square(labels - logits), axis=1)
-        # self.cost = cost = tf.reduce_mean(cost)
-
-        # self.sigm = tf.sigmoid(logits)
-        # set training strategy
 
         trainable_var = tf.trainable_variables()
-        self.train_op = train(cost, trainable_var)
+        self.train_op = self.train(cost, trainable_var)
+        self.seq_len = seq_size
+
+    def train(self, loss_val, var_list):
+
+        optimizer = tf.train.AdamOptimizer(self.lr)
+        grads = optimizer.compute_gradients(loss_val, var_list=var_list)
+
+        return optimizer.apply_gradients(grads, global_step=self.global_step)
+
+    def inference(self, inputs, keep_prob, is_training=True, reuse=None):
+        # initialization
+        # c1_out = affine_transform(inputs, num_hidden_1, name="hidden_1")
+        # inputs_shape = inputs.get_shape().as_list()
+        with tf.variable_scope(scope_name):
+            # print(inputs.get_shape().as_list())
+            # in_rnn = rnn_in(inputs, seq_size, target_delay)
+            in_rnn = signal.frame(inputs, seq_size+2*target_delay, seq_size, axis=0,)
+
+            # in_rnn = tf.reshape(inputs,[-1, seq_size+target_delay, num_features])
+            stacked_rnn = []
+            for iiLyr in range(num_layers):
+                stacked_rnn.append(tf.nn.rnn_cell.LSTMCell(num_units=lstm_cell_size, state_is_tuple=True))
+            MultiLyr_cell = tf.nn.rnn_cell.MultiRNNCell(cells=stacked_rnn, state_is_tuple=True)
+
+            outputs, _state = tf.nn.dynamic_rnn(MultiLyr_cell, in_rnn, time_major=False, dtype=tf.float32)
+            outputs = tf.reshape(outputs[:, target_delay-1:seq_size+target_delay-1, :], [-1, lstm_cell_size])
+
+            outputs = tf.nn.dropout(outputs, keep_prob=keep_prob)
+
+            logits = affine_transform(outputs, bdnn_outputsize, name="output1")
+            logits = tf.reshape(logits, [-1, int(bdnn_outputsize)])
+
+        return logits
 
 
-def main(prj_dir=None, model=None, mode=None):
+def main(save_dir, prj_dir=None, model=None, mode=None, dev="/gpu:2"):
     #                               Configuration Part                       #
+    # os.environ["CUDA_VISIBLE_DEVICES"] = '3'
+
+    device = dev
+    os.environ["CUDA_VISIBLE_DEVICES"] = device[-1]
     if mode is 'train':
         import path_setting as ps
 
-        set_path = ps.PathSetting(prj_dir, model)
+        set_path = ps.PathSetting(prj_dir, model,save_dir)
         logs_dir = initial_logs_dir = set_path.logs_dir
         input_dir = set_path.input_dir
         output_dir = set_path.output_dir
@@ -504,17 +489,13 @@ def main(prj_dir=None, model=None, mode=None):
         cost_summary_op = tf.summary.scalar("cost", summary_ph)
         accuracy_summary_op = tf.summary.scalar("accuracy", summary_ph)
 
-    # train_summary_writer = tf.summary.FileWriter(logs_dir + '/train/', max_queue=4)
-    # valid_summary_writer = tf.summary.FileWriter(logs_dir + '/valid/', max_queue=4)
-    # summary_dic = summary_generation(valid_file_dir)
-
     print("Done")
 
     #                               Model Save Part                            #
 
     print("Setting up Saver...")
     saver = tf.train.Saver()
-    ckpt = tf.train.get_checkpoint_state(logs_dir + '/LSTM')
+    ckpt = tf.train.get_checkpoint_state(logs_dir)
 
     print("Done")
 
@@ -546,13 +527,16 @@ def main(prj_dir=None, model=None, mode=None):
     if mode is 'train':
         train_data_set = dr.DataReader(input_dir, output_dir, norm_dir, target_delay=target_delay, u=u, name="train")  # training data reader initialization
 
-    # train_data_set = dr.DataReader(input_dir, output_dir, norm_dir, target_delay=target_delay, u=u, name="train")  # training data reader initialization
-
     if mode is 'train':
+        file_len = train_data_set.get_file_len()
+        MAX_STEP = max_epoch * file_len
 
-        for itr in range(max_epoch):
+        print(get_num_params())
 
-            train_inputs, train_labels = train_data_set.next_batch(batch_size)
+        for itr in range(MAX_STEP):
+
+            train_inputs, train_labels = train_data_set.next_batch(seq_size)
+
             one_hot_labels = train_labels.reshape((-1, 1))
             one_hot_labels = dense_to_one_hot(one_hot_labels, num_classes=2)
             feed_dict = {m_train.inputs: train_inputs, m_train.labels: one_hot_labels,
@@ -560,18 +544,19 @@ def main(prj_dir=None, model=None, mode=None):
 
             sess.run(m_train.train_op, feed_dict=feed_dict)
 
-            if itr % 10 == 0 and itr >= 0:
-                train_cost, train_accuracy = sess.run([m_train.cost, m_train.accuracy], feed_dict=feed_dict)
+            if itr % 100 == 0 and itr >= 0:
+                train_cost, train_accuracy, train_rate, train_pre = sess.run([m_train.cost, m_train.accuracy, m_train.lr, m_train.pred], feed_dict=feed_dict)
+                # print(logits)
 
-                print("Step: %d, train_cost: %.4f, train_accuracy=%4.4f" % (itr, train_cost, train_accuracy*100))
+                print("Step: %d, train_cost: %.4f, train_accuracy=%4.4f lr=%.8f" % (itr, train_cost, train_accuracy*100, train_rate))
+                pass
 
                 train_cost_summary_str = sess.run(cost_summary_op, feed_dict={summary_ph: train_cost})
                 train_accuracy_summary_str = sess.run(accuracy_summary_op, feed_dict={summary_ph: train_accuracy})
                 train_summary_writer.add_summary(train_cost_summary_str, itr)  # write the train phase summary to event files
                 train_summary_writer.add_summary(train_accuracy_summary_str, itr)
 
-            # if train_data_set.eof_checker():
-            if itr % 50 == 0 and itr > 0:
+            if itr % file_len == 0 and itr > 0:
 
                 saver.save(sess, logs_dir + "/model.ckpt", itr)  # model save
                 print('validation start!')
@@ -583,14 +568,8 @@ def main(prj_dir=None, model=None, mode=None):
                 valid_accuracy_summary_str = sess.run(accuracy_summary_op, feed_dict={summary_ph: valid_accuracy})
                 valid_summary_writer.add_summary(valid_cost_summary_str, itr)  # write the train phase summary to event files
                 valid_summary_writer.add_summary(valid_accuracy_summary_str, itr)
-
-                # mean_acc = full_evaluation(m_valid, sess, valid_batch_size, valid_file_dir,
-                #                            valid_summary_writer, summary_dic, itr)
-            # if mean_acc > 0.968:
-            #     print('finish!!')
-            #     break
-                # train_data_set.reader_initialize()
-                # print('Train data reader was initialized!')  # initialize eof flag & num_file & start index
+                gs.freeze_graph(prj_dir + '/logs/LSTM', prj_dir + '/saved_model/graph/LSTM',
+                                'model_1/soft_pred,model_1/raw_labels')
 
     elif mode is 'test':
 
@@ -598,11 +577,21 @@ def main(prj_dir=None, model=None, mode=None):
                                                      eval_type)
 
         if data_len is None:
-
             return final_softout, final_label
 
         else:
-
             return final_softout[0:data_len, :], final_label[0:data_len, :]
+
+
+def get_num_params():
+    num_params = 0
+    for variable in tf.trainable_variables():
+        shape = variable.get_shape()
+        num_params += reduce(mul, [dim.value for dim in shape], 1)
+    return num_params
+
+
+
+
 if __name__ == "__main__":
     tf.app.run()

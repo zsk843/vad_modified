@@ -15,13 +15,18 @@ from scipy.stats import binom
 from tensorflow.contrib import rnn
 from scipy.optimize import brentq
 from scipy.interpolate import interp1d
+from functools import reduce
+from operator import mul
+from tensorflow.python import debug as tf_debug
+import graph_save as gs
 
 '''program parameter'''
 
 visualization = False
 SEED = 1
 reset = True  # remove all existed logs and initialize log directories
-device = '/gpu:0'
+device = '/gpu:3'
+# os.environ['CUDA_VISIBLE_DEVICES'] = '3'
 tf.reset_default_graph()
 tf.set_random_seed(SEED)
 mode = 'test'
@@ -67,7 +72,7 @@ summary_list = ["cost", "accuracy_SNR_-5", "accuracy_SNR_0", "accuracy_SNR_5", "
 w = 19  # w default = 19
 u = 9  # u default = 9
 assert (w-1) % u == 0, "w-1 must be divisible by u"
-num_features = 768  # for MRCG feature
+num_features = 256  # for MRCG feature
 bdnn_winlen = (((w-1) / u) * 2) + 3
 bdnn_inputsize = int(bdnn_winlen * num_features)
 bdnn_outputsize = int(bdnn_winlen)
@@ -88,8 +93,8 @@ clip_th = 11  # default : 0.90491669
 # initLr = 0.000605  # default : 0.000970598, 0.000605
 initLr = 0.000605  # default : 0.000970598, 0.000605
 
-lrDecayRate = .95
-lrDecayFreq = 200  # default : 200
+lrDecayRate = .96
+lrDecayFreq = 20000  # default : 200
 val_start_step = 100
 val_freq = 1
 data_len = None
@@ -454,15 +459,16 @@ class Model(object):
         # set objective function
 
         self.cost, self.reward, self.train_op, self.avg_b, self.rminusb, self.sampled_bps_tensor, self.p_bps,\
-            self.print_lr, self.soft_result, self.raw_labels = self.calc_reward(cell_outputs)
+            self.print_lr, self.soft_result, self.raw_labels, self.result = self.calc_reward(cell_outputs)
 
     def inference(self, reuse=None):
 
         # initialization
         raw_inputs = self.inputs
-        batch_size = self.batch_size
         keep_prob = self.keep_probability
-        is_training = self.is_training
+        self.input_len_tf = tf.shape(raw_inputs)[0]
+        seq_size = tf.constant(nGlimpses, dtype=tf.int32)
+        batch_size = self.input_len_tf
 
         tf.set_random_seed(SEED)  # initialize the random seed at graph level
 
@@ -471,7 +477,7 @@ class Model(object):
 
         initial_state = lstm_cell.zero_state(batch_size, tf.float32)
 
-        init_sw = tf.ones([batch_size, int(bdnn_winlen)]) * 0  # start sign
+        init_sw = tf.ones([batch_size, seq_size]) * 0  # start sign
 
         self.mean_bps.append(init_sw)
 
@@ -518,10 +524,11 @@ class Model(object):
         # bp = tf.ones(bp.get_shape().as_list(), dtype=tf.float32) / 7  # for fix the attention
         bp = tf.expand_dims(bp, axis=2)
         bp = tf.tile(bp, (1, 1, num_features))
-        # bp = tf.reshape(bp, (inputs.get_shape()[0].value, -1, 1))
-        bp = tf.reshape(bp, (self.batch_size, -1, 1))
 
-        bp = tf.squeeze(bp)
+        # bp = tf.reshape(bp, (self.batch_size, -1, 1))
+        bp = tf.reshape(bp, (-1, nGlimpses*num_features, 1))
+
+        bp = tf.squeeze(bp, axis=2)
 
         sw = bp * inputs
 
@@ -600,7 +607,7 @@ class Model(object):
 
     def bdnn_prediction(self, logits, threshold):
 
-        batch_size_tensor = tf.constant(self.batch_size, dtype=tf.float32)
+        batch_size_tensor = self.input_len_tf
         th_tenor = tf.constant(threshold, dtype=tf.float32)
 
         result, soft_result = tf.py_func(bdnn_prediction, [batch_size_tensor, logits, th_tenor], Tout=[tf.float32, tf.float32])
@@ -618,13 +625,13 @@ class Model(object):
         # consider the action at the last time step
 
         outputs = outputs[-1]
-        outputs = tf.reshape(outputs, (batch_size, lstm_cell_size))
+        outputs = tf.reshape(outputs, (-1, lstm_cell_size))
 
         # get the baseline
 
         b = tf.stack(self.baselines)
         b = tf.tile(b, [1, 1, 1])
-        b = tf.reshape(tf.transpose(b, [1, 0, 2]), [batch_size, nGlimpses])
+        b = tf.reshape(tf.transpose(b, [1, 0, 2]), [-1, nGlimpses])
         no_grad_b = tf.stop_gradient(b)
 
         # get the action
@@ -638,11 +645,13 @@ class Model(object):
         # convert list of tensors to one big tensor
 
         mean_bps = tf.concat(axis=0, values=self.mean_bps)
-        mean_bps = tf.reshape(mean_bps, (nGlimpses, self.batch_size, int(bdnn_winlen)))
+        # mean_bps = tf.reshape(mean_bps, (nGlimpses, self.batch_size, int(bdnn_winlen)))
+        mean_bps = tf.reshape(mean_bps, (nGlimpses, -1, int(bdnn_winlen)))
         mean_bps = tf.transpose(mean_bps, [1, 0, 2])
 
         sampled_bps = tf.concat(axis=0, values=self.sampled_bps)
-        sampled_bps = tf.reshape(sampled_bps, (nGlimpses, self.batch_size, int(bdnn_winlen)))
+        # sampled_bps = tf.reshape(sampled_bps, (nGlimpses, self.batch_size, int(bdnn_winlen)))
+        sampled_bps = tf.reshape(sampled_bps, (nGlimpses, -1, int(bdnn_winlen)))
         sampled_bps = tf.transpose(sampled_bps, [1, 0, 2])
 
         # reward for all examples in the batch
@@ -654,12 +663,13 @@ class Model(object):
 
         R = tf.cast(tf.equal(result, raw_labels), tf.float32)
         soft_R = tf.stop_gradient(tf.cast(tf.abs(tf.subtract(1 - soft_result, raw_labels)), tf.float32))
-        soft_R = tf.reshape(soft_R, (batch_size, 1))
+        # soft_R = tf.reshape(soft_R, (-1, 1))
+        soft_R = tf.reshape(soft_R, (-1, 1))
         soft_R = tf.tile(soft_R, [1, nGlimpses])
 
         # R = tf.cast(tf.abs(tf.subtract(1 - soft_result, raw_labels)), tf.float32)
         R = tf.stop_gradient(R)
-        R = tf.reshape(R, (batch_size, 1))
+        R = tf.reshape(R, (-1, 1))
         self.raw_reward = R
         R = tf.tile(R, [1, nGlimpses])
         reward = tf.reduce_mean(R)
@@ -667,7 +677,8 @@ class Model(object):
         # select the window
 
         p_bps = multinomial_pmf(mean_bps, sampled_bps)
-        p_bps = tf.reshape(p_bps, (self.batch_size, nGlimpses))
+        # p_bps = tf.reshape(p_bps, (self.batch_size, nGlimpses))
+        p_bps = tf.reshape(p_bps, (-1, nGlimpses))
 
         # define the cost function
         sv_part = -tf.square(self.labels - logits)
@@ -690,17 +701,20 @@ class Model(object):
         train_op = optimizer.apply_gradients(zip(grads, var_list), global_step=self.global_step)
 
         return cost, reward, train_op, tf.reduce_mean(b), tf.reduce_mean(R - b), \
-               sampled_bps, tf.reduce_mean(p_bps), self.lr, soft_result, raw_labels
+               sampled_bps, tf.reduce_mean(p_bps), self.lr, soft_result, raw_labels, result
 
 
-def main(prj_dir=None, model=None, mode=None):
+def main(save_dir, prj_dir=None, model=None, mode=None, dev="/gpu:2"):
 
     #                               Configuration Part                       #
+    # os.environ["CUDA_VISIBLE_DEVICES"] = '3'
+    device = dev
+    os.environ["CUDA_VISIBLE_DEVICES"] = device[-1]
     if mode is 'train':
 
         import path_setting as ps
 
-        set_path = ps.PathSetting(prj_dir, model)
+        set_path = ps.PathSetting(prj_dir, model,save_dir)
         logs_dir = initial_logs_dir = set_path.logs_dir
         input_dir = set_path.input_dir
         output_dir = set_path.output_dir
@@ -804,8 +818,11 @@ def main(prj_dir=None, model=None, mode=None):
         train_data_set = dr.DataReader(input_dir, output_dir, norm_dir, w=w, u=u,
                                        name="train")  # training data reader initialization
     if mode is 'train':
+        file_len = train_data_set.get_file_len()
+        MAX_STEP = max_epoch * file_len
+        print(get_num_params())
 
-        for itr in range(max_epoch):
+        for itr in range(MAX_STEP):
 
             start_time = time.time()
 
@@ -816,26 +833,24 @@ def main(prj_dir=None, model=None, mode=None):
 
             sess.run(m_train.train_op, feed_dict=feed_dict)
 
-            if itr % 10 == 0 and itr >= 0:
-
-                train_cost, train_reward, train_avg_b, train_rminusb, train_p_bps, train_lr \
+            if itr % 100 == 0 and itr >= 0:
+                train_cost, train_reward, train_avg_b, train_rminusb, train_p_bps, train_lr, train_res \
                     = sess.run([m_train.cost, m_train.reward, m_train.avg_b, m_train.rminusb, m_train.p_bps,
-                                m_train.print_lr]
+                                m_train.print_lr,m_train.result]
                                , feed_dict=feed_dict)
 
                 duration = time.time() - start_time
                 print("Step: %d, cost: %.4f, accuracy: %4.4f, b: %4.4f, R-b: %4.4f, p_bps: %4.4f, lr: %7.6f (%.3f sec)"
                       % (itr, train_cost, train_reward, train_avg_b, train_rminusb, train_p_bps, train_lr, duration))
 
+                # np.save('pre/'+train_data_set.get_cur_file_name().split('/')[-1], train_res)
+
                 train_cost_summary_str = sess.run(cost_summary_op, feed_dict={summary_ph: train_cost})
                 train_accuracy_summary_str = sess.run(accuracy_summary_op, feed_dict={summary_ph: train_reward})
-                train_summary_writer.add_summary(train_cost_summary_str, itr)  # write the train phase summary to event files
+                train_summary_writer.add_summary(train_cost_summary_str, itr)
                 train_summary_writer.add_summary(train_accuracy_summary_str, itr)
 
-            # if train_data_set.eof_checker():
-
-            # if itr % val_freq == 0 and itr >= val_start_step:
-            if itr % 50 == 0 and itr > 0:
+            if itr % file_len == 0 and itr > 0:
                 saver.save(sess, logs_dir + "/model.ckpt", itr)  # model save
                 print('validation start!')
                 valid_accuracy, valid_cost = \
@@ -847,45 +862,26 @@ def main(prj_dir=None, model=None, mode=None):
                 valid_accuracy_summary_str = sess.run(accuracy_summary_op, feed_dict={summary_ph: valid_accuracy})
                 valid_summary_writer.add_summary(valid_cost_summary_str, itr)  # write the train phase summary to event files
                 valid_summary_writer.add_summary(valid_accuracy_summary_str, itr)
+                gs.freeze_graph(prj_dir + '/logs/ACAM', prj_dir + '/saved_model/graph/ACAM',
+                                'model_1/logits,model_1/raw_labels')
 
-                # mean_accuracy, var_accuracy = full_evaluation(m_valid, sess, valid_batch_size, valid_file_dir, valid_summary_writer, summary_dic, itr)
-                # if mean_accuracy >= 0.991:
-                #
-                #     print('model was saved!')
-                #     model_name = '/model' + str(int(mean_accuracy * 1e4)) + 'and'\
-                #                  + str(int(var_accuracy * 1e5)) + '.ckpt'
-                #     saver.save(sess, save_dir + model_name, itr)
-                # mean_acc_list.append(mean_accuracy)
-                # var_acc_list.append(var_accuracy)
-
-                # train_data_set.initialize()
 
     elif mode == 'test':
 
-        final_softout, final_label = utils.vad_test(m_valid, sess, valid_batch_size, test_file_dir, norm_dir, data_len,
-                                                    eval_type)
-
-
-        # if data_len is None:
-        #     return final_softout, final_label
-        # else:
-        #     final_softout = final_softout[0:data_len, :]
-        #     final_label = final_label[0:data_len, :]
-
-        # fpr, tpr, thresholds = metrics.roc_curve(final_label, final_softout, pos_label=1)
-        # eval_auc = metrics.auc(fpr, tpr)
-        # print(eval_auc)
-
-        # full_evaluation(m_valid, sess, valid_batch_size, test_file_dir, valid_summary_writer, summary_dic, 0)
-        # if visualization:
-        #     global attention
-        #     attention = np.asarray(attention)
-        #     sio.savemat('attention.mat', {'attention' : attention})
-        #     subprocess.call(['./visualize.sh'])
+        final_softout, final_label = utils.vad_test(m_valid, sess, valid_batch_size, test_file_dir, norm_dir, data_len,                                                    eval_type)
         if data_len is None:
             return final_softout, final_label
         else:
             return final_softout[0:data_len, :], final_label[0:data_len, :]
+
+
+def get_num_params():
+    num_params = 0
+    for variable in tf.trainable_variables():
+        shape = variable.get_shape()
+        num_params += reduce(mul, [dim.value for dim in shape], 1)
+    return num_params
+
 
 if __name__ == "__main__":
     tf.app.run()

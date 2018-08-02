@@ -26,7 +26,8 @@ initial_logs_dir = "/home/sbie/storage2/VAD_Database/saved_model/my_converted_ch
 logs_dir = "/home/sbie/github/VAD_Project/VAD_bDNN/logs_bDNN"
 ckpt_name = '/bDNN'
 reset = True  # remove all existed logs and initialize log directories
-device = '/gpu:0'
+device = '/gpu:3'
+# os.environ["CUDA_VISIBLE_DEVICES"] = '3'
 
 if mode is 'test':
     reset = False
@@ -160,7 +161,7 @@ def train(loss_val, var_list):
 
 
 def bdnn_prediction(batch_size, logits, threshold=th):
-    bdnn_batch_size = batch_size + 2*w
+    bdnn_batch_size = np.shape(logits)[0]-2*w;
     result = np.zeros((bdnn_batch_size, 1))
     indx = np.arange(bdnn_batch_size) + 1
     indx = indx.reshape((bdnn_batch_size, 1))
@@ -372,14 +373,17 @@ class Model(object):
         self.train_op = train(cost, trainable_var)
 
 
-def main(prj_dir=None, model=None, mode=None):
+def main(save_dir, prj_dir=None, model=None, mode=None, dev='/gpu:2'):
 
     #                               Configuration Part                       #
+    device = dev
+    os.environ["CUDA_VISIBLE_DEVICES"] = device[-1]
+    # os.environ["CUDA_VISIBLE_DEVICES"] = '3'
     if mode is 'train':
 
         import path_setting as ps
 
-        set_path = ps.PathSetting(prj_dir, model)
+        set_path = ps.PathSetting(prj_dir, model, save_dir)
         logs_dir = initial_logs_dir = set_path.logs_dir
         input_dir = set_path.input_dir
         output_dir = set_path.output_dir
@@ -472,9 +476,13 @@ def main(prj_dir=None, model=None, mode=None):
 
     if mode is 'train':
 
-        for itr in range(max_epoch):
+        file_len = train_data_set.get_file_len()
+        MAX_STEP = max_epoch * file_len * 1000 // batch_size
+        for itr in range(MAX_STEP):
 
             train_inputs, train_labels = train_data_set.next_batch(batch_size)
+
+            file_size = np.shape(train_inputs)[0]
 
             feed_dict = {m_train.inputs: train_inputs, m_train.labels: train_labels,
                          m_train.keep_probability: dropout_rate}
@@ -485,7 +493,7 @@ def main(prj_dir=None, model=None, mode=None):
 
                 train_cost, logits = sess.run([m_train.cost, m_train.logits], feed_dict=feed_dict)
 
-                result = bdnn_prediction(batch_size, logits, threshold=th)
+                result = bdnn_prediction(file_size, logits, threshold=th)
                 raw_indx = int(np.floor(train_labels.shape[1] / 2))
                 raw_labels = train_labels[:, raw_indx]
                 raw_labels = raw_labels.reshape((-1, 1))
@@ -501,7 +509,7 @@ def main(prj_dir=None, model=None, mode=None):
                 train_summary_writer.add_summary(train_accuracy_summary_str, itr)
 
             # if train_data_set.eof_checker():
-            if itr % 50 == 0 and itr > 0:
+            if itr % (file_len * 1000 // batch_size) == 0 and itr > 0:
 
                 saver.save(sess, logs_dir + "/model.ckpt", itr)  # model save
                 print('validation start!')

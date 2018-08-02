@@ -139,6 +139,9 @@ class DataReader(object):
     def set_random_batch(self, batch_size):
         self._start_idx = np.maximum(0, np.random.random_integers(self.num_samples - batch_size))
 
+    def get_file_len(self):
+        return self._file_len
+
 
 def dense_to_one_hot(labels_dense, num_classes=2):
     """Convert class labels from scalars to one-hot vectors."""

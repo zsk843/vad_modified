@@ -150,6 +150,9 @@ class DataReader(object):
     def file_change_initialize(self):
         self.file_change = False
 
+    def get_file_len(self):
+        return self._file_len
+
 
 def dense_to_one_hot(labels_dense, num_classes=2):
     """Convert class labels from scalars to one-hot vectors."""

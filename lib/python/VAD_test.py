@@ -19,13 +19,14 @@ from time import time
 
 if __name__ == '__main__':
 
+    os.environ["CUDA_VISIBLE_DEVICES"] = '3'
     try:
-        opts, args = getopt.getopt(sys.argv[1:], 'hm:l:d:', ["data_dir=", "norm_dir=", "model_dir="])
+        opts, args = getopt.getopt(sys.argv[1:], 'hm:', ["data_dir=", "prj_dir="])
     except getopt.GetoptError as err:
         print(str(err))
         sys.exit(1)
 
-    if len(opts) != 6:
+    if len(opts) != 3:
         print("arguments are not enough.")
         sys.exit(1)
 
@@ -34,82 +35,57 @@ if __name__ == '__main__':
             sys.exit(0)
         elif opt == '-m':
             mode = int(arg)
-        elif opt == '-l':
-            data_len = int(arg)
-        elif opt == '-d':
-            is_default = int(arg)
         elif opt == '--data_dir':
             data_dir = str(arg)
-        elif opt == '--norm_dir':
-            norm_dir = str(arg)
-        elif opt == '--model_dir':
-            model_dir = str(arg)
+            norm_dir = data_dir+'/train/feature_mrcg/global_normalization'
+        elif opt == '--prj_dir':
+            prj_dir = str(arg)
+            model_dir = prj_dir+'/saved_model'
+    
+   
+    is_default = False
 
     if mode == 0:
-        # Vp.test_config(c_test_dir=data_dir,
-        #                c_norm_dir=norm_dir,
-        #                c_initial_logs_dir=model_dir, c_batch_size_eval=batch_size,
-        #                c_data_len=data_len)
-        #
-        # pred, label = Vp.main()
 
         if is_default:
             graph_list = sorted(glob.glob(model_dir + '/backup/backup_pb/frozen_model_ACAM.pb'))
             norm_dir = model_dir + '/backup/backup_norm'
-            pred, label = graph_test.do_test(graph_list[-1], data_dir, norm_dir, data_len, is_default, mode)
+            pred, label = graph_test.do_test(graph_list[-1], data_dir, norm_dir, prj_dir, is_default, mode)
         else:
             graph_list = sorted(glob.glob(model_dir + '/graph/ACAM/*.pb'))
             print(graph_list)
-            pred, label = graph_test.do_test(graph_list[-1], data_dir, norm_dir, data_len, is_default, mode)
+            pred, label = graph_test.do_test(graph_list[-1], data_dir, norm_dir, prj_dir, is_default, mode)
 
     elif mode == 1:
 
-        print(os.path.abspath('./configure/bDNN'))
-        sys.path.insert(0, os.path.abspath('./configure/bDNN'))
+        print(prj_dir+'/configure/bDNN')
+        sys.path.insert(0, os.path.abspath(prj_dir+'/configure/bDNN'))
 
         import config as cg
         if is_default:
             graph_list = sorted(glob.glob(model_dir + '/backup/backup_pb/frozen_model_bDNN.pb'))
             norm_dir = model_dir + '/backup/backup_norm'
-            pred, label = graph_test.do_test(graph_list[-1], data_dir, norm_dir, data_len, is_default, mode)
+            pred, label = graph_test.do_test(graph_list[-1], data_dir, norm_dir, prj_dir, is_default, mode)
         else:
             graph_list = sorted(glob.glob(model_dir + '/graph/bDNN/*.pb'))
             print(graph_list)
-            pred, label = graph_test.do_test(graph_list[-1], data_dir, norm_dir, data_len, is_default, mode)
-
-        # Vb.test_config(c_test_dir=data_dir,
-        #                c_norm_dir=norm_dir,
-        #                c_initial_logs_dir=model_dir, c_batch_size_eval=batch_size,
-        #                c_data_len=data_len)
-        # Vb.test_config(c_test_dir=data_dir,
-        #                c_norm_dir='/home/sbie/storage3/github/VAD_Toolkit/VAD/saved_model/backup_norm',
-        #                c_initial_logs_dir='/home/sbie/storage3/github/VAD_Toolkit/VAD/saved_model/backup_ckpt', c_batch_size_eval=batch_size,
-        #                c_data_len=data_len)
-        #
-        # pred, label = Vb.main()
+            pred, label = graph_test.do_test(graph_list[-1], data_dir, norm_dir, prj_dir, is_default, mode)
 
     elif mode == 2:
 
         start_time = time()
-        print(os.path.abspath('./configure/DNN'))
-        sys.path.insert(0, os.path.abspath('./configure/DNN'))
+        print(prj_dir + '/configure/DNN')
+        sys.path.insert(0, os.path.abspath(prj_dir + '/configure/DNN'))
 
         import config as cg
 
         if is_default:
             graph_list = sorted(glob.glob(model_dir + '/backup/backup_pb/frozen_model_DNN.pb'))
             norm_dir = model_dir + '/backup/backup_norm'
-            pred, label = graph_test.do_test(graph_list[-1], data_dir, norm_dir, data_len, is_default, mode)
+            pred, label = graph_test.do_test(graph_list[-1], data_dir, norm_dir, prj_dir, is_default, mode)
         else:
             graph_list = sorted(glob.glob(model_dir + '/graph/DNN/*.pb'))
-            pred, label = graph_test.do_test(graph_list[-1], data_dir, norm_dir, data_len, is_default, mode)
-
-        # Vd.test_config(c_test_dir=data_dir,
-        #                c_norm_dir=norm_dir,
-        #                c_initial_logs_dir=model_dir, c_batch_size_eval=batch_size,
-        #                c_data_len=data_len)
-        #
-        # pred, label = Vd.main()
+            pred, label = graph_test.do_test(graph_list[-1], data_dir, norm_dir, prj_dir, is_default, mode)
 
         end_time = time()
 
@@ -118,26 +94,25 @@ if __name__ == '__main__':
 
     elif mode == 3:
 
-        sys.path.insert(0, os.path.abspath('./configure/LSTM'))
+        print(prj_dir + '/configure/LSTM')
+        sys.path.insert(0, os.path.abspath(prj_dir + '/configure/LSTM'))
 
         import config as cg
 
         if is_default:
-            graph_list = sorted(glob.glob(model_dir + '/backup/backup_pb/frozen_model_LSTM.pb'))
+            graph_list = sorted(glob.glob(model_dir + '/backup/backup_pb/frozen_model_LSTM.pb')) 
             norm_dir = model_dir + '/backup/backup_norm'
-            pred, label = graph_test.do_test(graph_list[-1], data_dir, norm_dir, data_len, is_default, mode)
+            pred, label = graph_test.do_test(graph_list[-1], data_dir, norm_dir, prj_dir, is_default, mode)
         else:
             graph_list = sorted(glob.glob(model_dir + '/graph/LSTM/*.pb'))
             print(graph_list)
-            pred, label = graph_test.do_test(graph_list[-1], data_dir, norm_dir, data_len, is_default, mode)
+            pred, label = graph_test.do_test(graph_list[-1], data_dir, norm_dir, prj_dir, is_default, mode)
 
-        # Vl.test_config(c_test_dir=data_dir,
-        #                c_norm_dir=norm_dir,
-        #                c_initial_logs_dir=model_dir, c_batch_num=200, c_seq_size=20,
-        #                c_data_len=data_len)
-        #
-        # pred, label = Vl.main()
+        for p in pred:
+            p[p <= 0] = 0
+            p[p > 0] = 1
+
     
-    sio.savemat('./result/pred.mat', {'pred': pred})
-    sio.savemat('./result/label.mat', {'label': label})
+    sio.savemat('../../result/pred.mat', {'pred': pred})
+    sio.savemat('../../result/label.mat', {'label': label})
     print("done")

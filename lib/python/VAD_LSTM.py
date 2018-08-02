@@ -28,7 +28,8 @@ initial_logs_dir = "/home/sbie/github/VAD_Project_test/VAD_LSTM/logs_LSTM"
 ckpt_name = "/model.ckpt-12000"
 
 reset = False  # remove all existed logs and initialize log directories
-device = "/gpu:1"
+device = '/gpu:3'
+# os.environ["CUDA_VISIBLE_DEVICES"] = '3'
 mode = 'test'
 if mode is 'test':
     reset = False
@@ -418,7 +419,7 @@ class Model(object):
 def main(argv=None):
     mean_acc = 0
     #                               Graph Part                                 #
-
+    os.environ["CUDA_VISIBLE_DEVICES"] = '3'
     print("Graph initialization...")
     with tf.device(device):
         with tf.variable_scope("model", reuse=None):
@@ -467,8 +468,10 @@ def main(argv=None):
     train_data_set = dr.DataReader(input_dir, output_dir, norm_dir, w=w, u=u, name="train")  # training data reader initialization
 
     if mode is 'train':
-
-        for itr in range(max_epoch):
+        file_len = train_data_set.get_file_len()
+        MAX_STEP = max_epoch * file_len * 1000 // batch_size
+        print(get_num_params())
+        for itr in range(MAX_STEP):
 
             train_inputs, train_labels = train_data_set.next_batch(batch_size)
             one_hot_labels = train_labels.reshape((-1, 1))
@@ -478,7 +481,7 @@ def main(argv=None):
 
             sess.run(m_train.train_op, feed_dict=feed_dict)
 
-            if itr % 50 == 0 and itr >= 0:
+            if itr % (file_len * 1000 // batch_size) == 0 and itr > 0:
                 train_cost, train_accuracy = sess.run([m_train.cost, m_train.accuracy], feed_dict=feed_dict)
 
                 # train_cost, logits = sess.run([m_train.cost, m_train.logits], feed_dict=feed_dict)
@@ -499,7 +502,7 @@ def main(argv=None):
                 train_summary_writer.add_summary(train_accuracy_summary_str, itr)
 
             # if train_data_set.eof_checker():
-            if itr % 1000 == 0 and itr > 0:
+            if itr % (file_len * 1000 // batch_size) == 0 and itr > 0:
 
                 saver.save(sess, logs_dir + "/model.ckpt", itr)  # model save
                 print('validation start!')
@@ -525,6 +528,13 @@ def main(argv=None):
     else:
 
         return final_softout[0:data_len, :], final_label[0:data_len, :]
+
+def get_num_params():
+    num_params = 0
+    for variable in tf.trainable_variables():
+        shape = variable.get_shape()
+        num_params += reduce(mul, [dim.value for dim in shape], 1)
+    return num_params
 
 if __name__ == "__main__":
     tf.app.run()

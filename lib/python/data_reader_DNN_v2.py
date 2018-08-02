@@ -7,6 +7,44 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 
 
+SAMPLE_RATE = 16000
+
+
+def frame_l2feature_l(data):
+    iidx = 0
+    Frame_iidx = 0
+    wsize = int(SAMPLE_RATE * 25 * 0.001)
+    wstep = int(SAMPLE_RATE * 10 * 0.001)
+
+    nx = np.shape(data)[0]
+    noverlap = wsize - wstep
+    framelen = (nx - noverlap) // (wsize - noverlap)
+
+    Detect = np.zeros(framelen)
+
+    while True:
+
+        if iidx + wsize < np.shape(data)[0]:
+            TrueLabel_frame = data[iidx:iidx + wsize] * 10
+
+        else:
+            TrueLabel_frame = data[iidx:] * 10
+
+        if sum(TrueLabel_frame) >= wsize / 2:
+            TrueLabel_frame = 1
+        else:
+            TrueLabel_frame = 0
+
+        if Frame_iidx >= np.shape(Detect)[0]:
+            break
+
+        Detect[Frame_iidx] = TrueLabel_frame
+        iidx = iidx + wstep
+        Frame_iidx = Frame_iidx + 1
+        if iidx > np.shape(data)[0]:
+            break
+    return Detect
+
 class DataReader(object):
 
     def __init__(self, input_dir, output_dir, norm_dir, w=19, u=9, name=None):
@@ -14,9 +52,9 @@ class DataReader(object):
         self._input_dir = input_dir
         self._output_dir = output_dir
         self._norm_dir = norm_dir
-        self._input_file_list = sorted(glob.glob(input_dir+'/*.bin'))
-        self._input_spec_list = sorted(glob.glob(input_dir+'/*.txt'))
-        self._output_file_list = sorted(glob.glob(output_dir+'/*.bin'))
+        self._input_file_list = sorted(glob.glob(input_dir+'/*.npy'))
+        # self._input_spec_list = sorted(glob.glob(input_dir+'/*.txt'))
+        self._output_file_list = sorted(glob.glob(output_dir+'/*.npy'))
         self._file_len = len(self._input_file_list)
         self._name = name
         assert self._file_len == len(self._output_file_list), "# input files and output file is not matched"
@@ -45,20 +83,22 @@ class DataReader(object):
         pass
 
     @staticmethod
-    def _read_input(input_file_dir, input_spec_dir):
+    def _read_input(input_file_dir):
 
-        data = np.fromfile(input_file_dir, dtype=np.float32)  # (# total frame, feature_size)
-        with open(input_spec_dir,'r') as f:
-            spec = f.readline()
-            size = spec.split(',')
-        data = data.reshape((int(size[0]), int(size[1])), order='F')
+        data = np.load(input_file_dir)  # (# total frame, feature_size)
+        # with open(input_spec_dir, 'r') as f:
+        #     spec = f.readline()
+        #     size = spec.split(',')
+        # data = data.reshape((int(size[0]), int(size[1])), order='F')
 
         return data
+
 
     @staticmethod
     def _read_output(output_file_dir):
 
-        data = np.fromfile(output_file_dir, dtype=np.float32)  # data shape : (# total frame,)
+        data = np.load(output_file_dir)
+        # data = frame_l2feature_l(data)# data shape : (# total frame,)
         data = data.reshape(-1, 1)  # data shape : (# total frame, 1)
 
         return data
@@ -75,65 +115,45 @@ class DataReader(object):
 
     def next_batch(self, batch_size):
 
-        if self._start_idx == self._w:
-            self._inputs = self._padding(
-                self._read_input(self._input_file_list[self._num_file],
-                                 self._input_spec_list[self._num_file]), batch_size, self._w)
-            self._outputs = self._padding(self._read_output(self._output_file_list[self._num_file]), batch_size, self._w)
-            assert np.shape(self._inputs)[0] == np.shape(self._outputs)[0], \
-                ("# samples is not matched between input: %d and output: %d files"
-                 % (np.shape(self._inputs)[0], np.shape(self._outputs)[0]))
+        self._inputs = self._read_input(self._input_file_list[self._num_file])
+        self._outputs = self._read_output(self._output_file_list[self._num_file])
+        assert np.shape(self._inputs)[0] == np.shape(self._outputs)[0], \
+            ("# samples is not matched between input: %d and output: %d files"
+             % (np.shape(self._inputs)[0], np.shape(self._outputs)[0]))
+        self.num_samples = np.shape(self._outputs)[0]
 
-            self.num_samples = np.shape(self._outputs)[0]
+        self._start_idx = self._w
+        self.file_change = True
+        self._num_file += 1
 
-        if self._start_idx + batch_size > self.num_samples:
+        if self._num_file > self._file_len - 1:
+            self.eof = True
+            self._num_file = 0
 
-            self._start_idx = self._w
-            self.file_change = True
-            self._num_file += 1
+        # self._inputs = self._read_input(self._input_file_list[self._num_file],self._input_spec_list[self._num_file])
+        # self._outputs = self._read_output(self._output_file_list[self._num_file])
 
-            # print("EOF : " + self._name + " file_" + str(self._num_file-1).zfill(2) +
-            #       " -> BOF : " + self._name + " file_" + str(self._num_file).zfill(2))
+        data_len = np.shape(self._inputs)[0]
+        self._outputs = self._outputs[0:data_len, :]
 
-            if self._num_file > self._file_len - 1:
-                self.eof = True
-                self._num_file = 0
-                # print("EOF : last " + self._name + " file. " + "-> BOF : " + self._name + " file_" +
-                #       str(self._num_file).zfill(2))
+        assert np.shape(self._inputs)[0] == np.shape(self._outputs)[0], \
+            ("# samples is not matched between input: %d and output: %d files"
+             % (np.shape(self._inputs)[0], np.shape(self._outputs)[0]))
 
-            self._inputs = self._padding(
-                self._read_input(self._input_file_list[self._num_file],
-                                 self._input_spec_list[self._num_file]), batch_size, self._w)
+        self.num_samples = np.shape(self._outputs)[0]
 
-            self._outputs = self._padding(self._read_output(self._output_file_list[self._num_file]), batch_size, self._w)
-
-            data_len = np.shape(self._inputs)[0]
-            self._outputs = self._outputs[0:data_len, :]
-
-            assert np.shape(self._inputs)[0] == np.shape(self._outputs)[0], \
-                ("# samples is not matched between input: %d and output: %d files"
-                 % (np.shape(self._inputs)[0], np.shape(self._outputs)[0]))
-
-            self.num_samples = np.shape(self._outputs)[0]
-
-        else:
-            self.file_change = False
-            self.eof = False
-
-
-        inputs = self._inputs[self._start_idx - self._w:self._start_idx + batch_size + self._w, :]
+        inputs = self._inputs
         self.raw_inputs = inputs  # adding part
         inputs = self.normalize(inputs)
         inputs = utils.bdnn_transform(inputs, self._w, self._u)
-        inputs = inputs[self._w: -self._w, :]
+        # inputs = inputs[self._w: -self._w, :]
 
-        outputs = self._outputs[self._start_idx:self._start_idx + batch_size, :]
-
-        self._start_idx += batch_size
+        outputs = self._outputs
 
         return inputs, outputs
 
-        #num_batches = (np.shape(self._outputs)[0] - np.shape(self._outputs)[0] % batch_size) / batch_size
+        # num_batches = (np.shape(self._outputs)[0] - np.shape(self._outputs)[0] % batch_size) / batch_size
+
     def normalize(self, x):
         x = (x - self.train_mean)/self.train_std
         # a = (np.std(x, axis=0))
@@ -152,6 +172,9 @@ class DataReader(object):
 
     def file_change_initialize(self):
         self.file_change = False
+
+    def get_file_len(self):
+        return self._file_len
 
 
 def dense_to_one_hot(labels_dense, num_classes=2):

@@ -20,9 +20,8 @@ __author__ = 'Juntae'
 def vad_test(m_eval, sess_eval, batch_size_eval, eval_file_dir, norm_dir, data_len, eval_type):
 
     eval_input_dir = eval_file_dir
-    eval_output_dir = eval_file_dir + '/Labels'
+    eval_output_dir = eval_file_dir
 
-    pad_size = batch_size_eval - data_len % batch_size_eval
     if eval_type != 2:
         eval_data_set = dr.DataReader(eval_input_dir, eval_output_dir, norm_dir, w=19, u=9, name="eval")
     else:
@@ -161,10 +160,13 @@ def evaluation(m_valid, valid_data_set, sess, eval_batch_size, eval_type):
 
 
 def onehot_tensor(label_batch, num_labels):
-    batch_size = label_batch.get_shape().as_list()[0]
+    batch_size = tf.shape(label_batch)[0]
+    # batch_size = label_batch.get_shape().as_list()[0]
     num_labels = tf.cast(num_labels, tf.int32)
     sparse_labels = tf.cast(tf.reshape(label_batch, [-1, 1]), dtype=tf.int32)
-    indices = tf.reshape(tf.range(0, batch_size, 1), [batch_size, 1])
+    # sparse_labels = tf.floor(label_batch)
+
+    indices = tf.reshape(tf.range(0, batch_size, 1), [-1, 1])
     concated = tf.concat(axis=1, values=[indices, sparse_labels])
     outshape = tf.stack([batch_size, num_labels])
     labels = tf.sparse_to_dense(concated, outshape, 1.0, 0.0)
@@ -537,6 +539,7 @@ def dense_to_one_hot(labels_dense, num_classes=2):
     return labels_one_hot.astype(np.float32)
 
 
+
 def do_validation(m_valid, sess, valid_file_dir, norm_dir, type='DNN'):
 
     # dataset reader setting #
@@ -549,7 +552,7 @@ def do_validation(m_valid, sess, valid_file_dir, norm_dir, type='DNN'):
         import config as cg
         valid_batch_size = cg.batch_size
 
-        valid_data_set = dnn_dr.DataReader(valid_file_dir, valid_file_dir+'/Labels', norm_dir, w=cg.w,
+        valid_data_set = dnn_dr.DataReader(valid_file_dir+'/feature_mrcg', valid_file_dir+'/label', norm_dir, w=cg.w,
                                            u=cg.u, name="eval")
 
         avg_valid_accuracy = 0.
@@ -563,20 +566,7 @@ def do_validation(m_valid, sess, valid_file_dir, norm_dir, type='DNN'):
 
             valid_inputs, valid_labels = valid_data_set.next_batch(valid_batch_size)
 
-            if valid_data_set.file_change_checker():
-                # print(itr_file)
-                accuracy_list[itr_file] = avg_valid_accuracy / itr_sum
-                cost_list[itr_file] = avg_valid_cost / itr_sum
-                avg_valid_cost = 0.
-                avg_valid_accuracy = 0.
-                itr_sum = 0
-                itr_file += 1
-                valid_data_set.file_change_initialize()
 
-            if valid_data_set.eof_checker():
-                valid_data_set.reader_initialize()
-                print('Valid data reader was initialized!')  # initialize eof flag & num_file & start index
-                break
 
             one_hot_labels = valid_labels.reshape((-1, 1))
             one_hot_labels = dense_to_one_hot(one_hot_labels, num_classes=2)
@@ -596,6 +586,21 @@ def do_validation(m_valid, sess, valid_file_dir, norm_dir, type='DNN'):
             avg_valid_cost += valid_cost
             itr_sum += 1
 
+            if valid_data_set.file_change_checker():
+                # print(itr_file)
+                accuracy_list[itr_file] = avg_valid_accuracy/itr_sum
+                cost_list[itr_file] = avg_valid_cost / itr_sum
+                avg_valid_cost = 0.
+                avg_valid_accuracy = 0.
+                itr_sum = 0
+                itr_file += 1
+                valid_data_set.file_change_initialize()
+
+            if valid_data_set.eof_checker():
+                valid_data_set.reader_initialize()
+                print('Valid data reader was initialized!')  # initialize eof flag & num_file & start index
+                break
+
         total_avg_valid_accuracy = np.asscalar(np.mean(np.asarray(accuracy_list)))
         total_avg_valid_cost = np.asscalar(np.mean(np.asarray(cost_list)))
 
@@ -605,7 +610,7 @@ def do_validation(m_valid, sess, valid_file_dir, norm_dir, type='DNN'):
         import config as cg
         valid_batch_size = cg.batch_size
 
-        valid_data_set = dr.DataReader(valid_file_dir, valid_file_dir + '/Labels', norm_dir, w=cg.w,
+        valid_data_set = dr.DataReader(valid_file_dir+'/feature_mrcg', valid_file_dir + '/label', norm_dir, w=cg.w,
                                            u=cg.u, name="eval")
         avg_valid_accuracy = 0.
         avg_valid_cost = 0.
@@ -619,20 +624,7 @@ def do_validation(m_valid, sess, valid_file_dir, norm_dir, type='DNN'):
 
             valid_inputs, valid_labels = valid_data_set.next_batch(valid_batch_size)
 
-            if valid_data_set.file_change_checker():
-                # print(itr_file)
-                accuracy_list[itr_file] = avg_valid_accuracy / itr_sum
-                cost_list[itr_file] = avg_valid_cost / itr_sum
-                avg_valid_cost = 0.
-                avg_valid_accuracy = 0.
-                itr_sum = 0
-                itr_file += 1
-                valid_data_set.file_change_initialize()
 
-            if valid_data_set.eof_checker():
-                valid_data_set.reader_initialize()
-                print('Valid data reader was initialized!')  # initialize eof flag & num_file & start index
-                break
 
             feed_dict = {m_valid.inputs: valid_inputs, m_valid.labels: valid_labels,
                          m_valid.keep_probability: 1}
@@ -652,28 +644,6 @@ def do_validation(m_valid, sess, valid_file_dir, norm_dir, type='DNN'):
             avg_valid_accuracy += valid_accuracy
             itr_sum += 1
 
-        total_avg_valid_accuracy = np.asscalar(np.mean(np.asarray(accuracy_list)))
-        total_avg_valid_cost = np.asscalar(np.mean(np.asarray(cost_list)))
-
-    elif type is 'ACAM':
-
-        sys.path.insert(0, os.path.abspath('../../configure/ACAM'))
-        import config as cg
-        valid_batch_size = cg.batch_size
-
-        valid_data_set = dr.DataReader(valid_file_dir, valid_file_dir+'/Labels', norm_dir, w=cg.w,
-                                           u=cg.u, name="eval")
-        avg_valid_accuracy = 0.
-        avg_valid_cost = 0.
-        itr_sum = 0.
-
-        accuracy_list = [0 for i in range(valid_data_set._file_len)]
-        cost_list = [0 for i in range(valid_data_set._file_len)]
-        itr_file = 0
-        while True:
-
-            valid_inputs, valid_labels = valid_data_set.next_batch(valid_batch_size)
-
             if valid_data_set.file_change_checker():
                 # print(itr_file)
                 accuracy_list[itr_file] = avg_valid_accuracy / itr_sum
@@ -688,6 +658,28 @@ def do_validation(m_valid, sess, valid_file_dir, norm_dir, type='DNN'):
                 valid_data_set.reader_initialize()
                 print('Valid data reader was initialized!')  # initialize eof flag & num_file & start index
                 break
+
+        total_avg_valid_accuracy = np.asscalar(np.mean(np.asarray(accuracy_list)))
+        total_avg_valid_cost = np.asscalar(np.mean(np.asarray(cost_list)))
+
+    elif type is 'ACAM':
+
+        sys.path.insert(0, os.path.abspath('../../configure/ACAM'))
+        import config as cg
+        valid_batch_size = cg.batch_size
+
+        valid_data_set = dr.DataReader(valid_file_dir+'/feature_mrcg', valid_file_dir+'/label', norm_dir, w=cg.w,
+                                           u=cg.u, name="eval")
+        avg_valid_accuracy = 0.
+        avg_valid_cost = 0.
+        itr_sum = 0.
+
+        accuracy_list = [0 for i in range(valid_data_set._file_len)]
+        cost_list = [0 for i in range(valid_data_set._file_len)]
+        itr_file = 0
+        while True:
+
+            valid_inputs, valid_labels = valid_data_set.next_batch(valid_batch_size)
 
             feed_dict = {m_valid.inputs: valid_inputs, m_valid.labels: valid_labels,
                          m_valid.keep_probability: 1}
@@ -704,30 +696,6 @@ def do_validation(m_valid, sess, valid_file_dir, norm_dir, type='DNN'):
             avg_valid_cost += valid_cost
             itr_sum += 1
 
-        total_avg_valid_accuracy = np.asscalar(np.mean(np.asarray(accuracy_list)))
-        total_avg_valid_cost = np.asscalar(np.mean(np.asarray(cost_list)))
-
-    elif type is 'LSTM':
-
-        sys.path.insert(0, os.path.abspath('../../configure/LSTM'))
-        import config as cg
-
-        valid_batch_size = cg.seq_len * cg.num_batches
-
-        valid_data_set = rnn_dr.DataReader(valid_file_dir, valid_file_dir+'/Labels', norm_dir, target_delay=cg.target_delay,
-                                           name="eval")
-
-        avg_valid_accuracy = 0.
-        avg_valid_cost = 0.
-        itr_sum = 0.
-
-        accuracy_list = [0 for i in range(valid_data_set._file_len)]
-        cost_list = [0 for i in range(valid_data_set._file_len)]
-        itr_file = 0
-        while True:
-
-            valid_inputs, valid_labels = valid_data_set.next_batch(valid_batch_size)
-
             if valid_data_set.file_change_checker():
                 # print(itr_file)
                 accuracy_list[itr_file] = avg_valid_accuracy / itr_sum
@@ -743,6 +711,30 @@ def do_validation(m_valid, sess, valid_file_dir, norm_dir, type='DNN'):
                 print('Valid data reader was initialized!')  # initialize eof flag & num_file & start index
                 break
 
+        total_avg_valid_accuracy = np.asscalar(np.mean(np.asarray(accuracy_list)))
+        total_avg_valid_cost = np.asscalar(np.mean(np.asarray(cost_list)))
+
+    elif type is 'LSTM':
+
+        sys.path.insert(0, os.path.abspath('../../configure/LSTM'))
+        import config as cg
+
+        valid_batch_size = cg.seq_len
+
+        valid_data_set = rnn_dr.DataReader(valid_file_dir+"/feature_mrcg", valid_file_dir+'/label', norm_dir, target_delay=cg.target_delay,
+                                           name="eval")
+
+        avg_valid_accuracy = 0.
+        avg_valid_cost = 0.
+        itr_sum = 0.
+
+        accuracy_list = [0 for i in range(valid_data_set._file_len)]
+        cost_list = [0 for i in range(valid_data_set._file_len)]
+        itr_file = 0
+        while True:
+
+            valid_inputs, valid_labels = valid_data_set.next_batch(valid_batch_size)
+
             one_hot_labels = valid_labels.reshape((-1, 1))
             one_hot_labels = dense_to_one_hot(one_hot_labels, num_classes=2)
 
@@ -754,12 +746,26 @@ def do_validation(m_valid, sess, valid_file_dir, norm_dir, type='DNN'):
             #
             # fpr, tpr, thresholds = metrics.roc_curve(valid_raw_labels, valid_softpred, pos_label=1)
             # valid_auc = metrics.auc(fpr, tpr)
-
             valid_cost, valid_accuracy = sess.run([m_valid.cost, m_valid.accuracy], feed_dict=feed_dict)
 
             avg_valid_accuracy += valid_accuracy
             avg_valid_cost += valid_cost
             itr_sum += 1
+
+            if valid_data_set.file_change_checker():
+                # print(itr_file)
+                accuracy_list[itr_file] = avg_valid_accuracy / itr_sum
+                cost_list[itr_file] = avg_valid_cost / itr_sum
+                avg_valid_cost = 0.
+                avg_valid_accuracy = 0.
+                itr_sum = 0
+                itr_file += 1
+                valid_data_set.file_change_initialize()
+
+            if valid_data_set.eof_checker():
+                valid_data_set.reader_initialize()
+                print('Valid data reader was initialized!')  # initialize eof flag & num_file & start index
+                break
 
         total_avg_valid_accuracy = np.asscalar(np.mean(np.asarray(accuracy_list)))
         total_avg_valid_cost = np.asscalar(np.mean(np.asarray(cost_list)))

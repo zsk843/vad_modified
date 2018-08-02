@@ -9,6 +9,10 @@ import matplotlib.image as mpimg
 from sklearn import metrics
 from scipy.optimize import brentq
 from scipy.interpolate import interp1d
+from functools import reduce
+from operator import mul
+import time
+import graph_save as gs
 
 
 mode = 'test'
@@ -25,7 +29,8 @@ initial_logs_dir = "/home/sbie/storage2/VAD_Database/saved_model/my_converted_ch
 logs_dir = "/home/sbie/github/VAD_Project/VAD_DNN/logs_DNN"
 ckpt_name = '/DNN'
 reset = True  # remove all existed logs and initialize log directories
-device = '/gpu:0'
+device = '/gpu:3'
+# os.environ["CUDA_VISIBLE_DEVICES"] = '3'
 
 if mode is 'test':
     reset = False
@@ -40,7 +45,7 @@ summary_list = ["cost", "accuracy_SNR_-5", "accuracy_SNR_0", "accuracy_SNR_5", "
                 "accuracy_across_all_SNRs"]
 
 # learning_rate = 0.00733
-learning_rate = 0.0001
+learning_rate = 0.005
 eval_num_batches = 2e5
 SMALL_NUM = 1e-4
 max_epoch = int(1000)
@@ -51,8 +56,8 @@ w = 19  # w default = 19
 u = 9  # u default = 9
 eval_th = 0.5
 th = 0.5
-num_hidden_1 = 512
-num_hidden_2 = 512
+num_hidden_1 = 256
+num_hidden_2 = 256
 model_config = {"w": w, "u": u, "num_hidden_1": num_hidden_1, "num_hidden_2": num_hidden_2}
 
 
@@ -121,41 +126,7 @@ def summary_generation(eval_file_dir):
     return summary_dic
 
 
-def inference(inputs, keep_prob, is_training=True):
 
-    # initialization
-    # h1_out = affine_transform(inputs, num_hidden_1, name="hidden_1")
-    h1_out = utils.batch_norm_affine_transform(inputs, num_hidden_1, name="hidden_1", decay=decay, is_training=is_training)
-    h1_out = tf.nn.relu(h1_out)
-    h1_out = tf.nn.dropout(h1_out, keep_prob=keep_prob)
-
-    # h2_out = utils.batch_norm_affine_transform(h1_out, num_hidden_2, name="hidden_2")
-    h2_out = utils.batch_norm_affine_transform(h1_out, num_hidden_2, name="hidden_2", decay=decay, is_training=is_training)
-    h2_out = tf.nn.relu(h2_out)
-    h2_out = tf.nn.dropout(h2_out, keep_prob=keep_prob)
-
-    logits = affine_transform(h2_out, 2, name="output")
-
-    return logits
-
-
-def train(loss_val, var_list):
-
-    lrDecayRate = .96
-    lrDecayFreq = 200
-    momentumValue = .9
-
-    global_step = tf.Variable(0, trainable=False)
-    lr = tf.train.exponential_decay(learning_rate, global_step, lrDecayFreq, lrDecayRate, staircase=True)
-
-    # define the optimizer
-    # optimizer = tf.train.MomentumOptimizer(lr, momentumValue)
-    # optimizer = tf.train.AdagradOptimizer(lr)
-    #
-    optimizer = tf.train.AdamOptimizer(lr)
-    grads = optimizer.compute_gradients(loss_val, var_list=var_list)
-
-    return optimizer.apply_gradients(grads, global_step=global_step)
 
 
 def bdnn_prediction(bdnn_batch_size, logits, threshold=th):
@@ -315,9 +286,16 @@ class Model(object):
                                               name="inputs")
         self.labels = labels = tf.placeholder(tf.float32, shape=[None, 2],
                                                             name="labels")
+        lrDecayRate = 0.96
+        lrDecayFreq = 20000
+
+        self.global_step = tf.Variable(0, trainable=True)
+
+        self.lr = tf.train.exponential_decay(learning_rate, self.global_step, lrDecayFreq, lrDecayRate, staircase=True)
 
         # set inference graph
-        self.logits = logits = inference(inputs, self.keep_probability, is_training=is_training)  # (batch_size, bdnn_outputsize)
+        # set inference graph
+        self.logits = logits = self.inference(inputs, self.keep_probability, is_training=is_training)  # (batch_size, bdnn_outputsize)
         # set objective function
         pred = tf.argmax(logits, axis=1, name="prediction")
         softpred = tf.identity(logits[:, 1], name="soft_pred")
@@ -336,16 +314,44 @@ class Model(object):
         # self.sigm = tf.sigmoid(logits)
         # set training strategy
         trainable_var = tf.trainable_variables()
-        self.train_op = train(self.cost, trainable_var)
+        self.train_op = self.train(self.cost, trainable_var)
+
+    def inference(self, inputs, keep_prob, is_training=True):
+        # initialization
+        # h1_out = affine_transform(inputs, num_hidden_1, name="hidden_1")
+        h1_out = utils.batch_norm_affine_transform(inputs, num_hidden_1, name="hidden_1", decay=decay,
+                                                   is_training=is_training)
+        h1_out = tf.nn.relu(h1_out)
+        h1_out = tf.nn.dropout(h1_out, keep_prob=keep_prob)
+
+        # h2_out = utils.batch_norm_affine_transform(h1_out, num_hidden_2, name="hidden_2")
+        h2_out = utils.batch_norm_affine_transform(h1_out, num_hidden_2, name="hidden_2", decay=decay,
+                                                   is_training=is_training)
+        h2_out = tf.nn.relu(h2_out)
+        h2_out = tf.nn.dropout(h2_out, keep_prob=keep_prob)
+
+        logits = affine_transform(h2_out, 2, name="output")
+
+        return logits
+
+    def train(self, loss_val, var_list):
+
+        optimizer = tf.train.AdamOptimizer(self.lr)
+        grads = optimizer.compute_gradients(loss_val, var_list=var_list)
+
+        return optimizer.apply_gradients(grads, global_step=self.global_step)
 
 
-def main(prj_dir=None, model=None, mode=None):
+def main(save_dir, prj_dir=None, model=None, mode=None, dev="/gpu:2"):
 
     #                               Configuration Part                       #
+    # os.environ["CUDA_VISIBLE_DEVICES"] = '3'
+    device = dev
+    os.environ["CUDA_VISIBLE_DEVICES"] = device[-1]
     if mode is 'train':
         import path_setting as ps
 
-        set_path = ps.PathSetting(prj_dir, model)
+        set_path = ps.PathSetting(prj_dir, model, save_dir)
         logs_dir = initial_logs_dir = set_path.logs_dir
         input_dir = set_path.input_dir
         output_dir = set_path.output_dir
@@ -431,12 +437,15 @@ def main(prj_dir=None, model=None, mode=None):
         train_data_set = dr.DataReader(input_dir, output_dir, norm_dir, w=w, u=u, name="train")  # training data reader initialization
 
     if mode is 'train':
+        file_len = train_data_set.get_file_len()
+        MAX_STEP = max_epoch*file_len
+        all_labels = []
 
-        for itr in range(max_epoch):
-
+        print("The number of parameters: "+str(get_num_params()))
+        for itr in range(MAX_STEP):
+            t = time.time()
             train_inputs, train_labels = train_data_set.next_batch(batch_size)
-            # imgplot = plt.imshow(train_inputs)
-            # plt.show()
+
             one_hot_labels = train_labels.reshape((-1, 1))
             one_hot_labels = dense_to_one_hot(one_hot_labels, num_classes=2)
 
@@ -444,18 +453,13 @@ def main(prj_dir=None, model=None, mode=None):
                          m_train.keep_probability: dropout_rate}
 
             sess.run(m_train.train_op, feed_dict=feed_dict)
+            t = time.time()-t
+            if itr % 100 == 0 and itr >= 0:
 
-            if itr % 10 == 0 and itr >= 0:
+                train_cost, train_accuracy, print_lr \
+                   = sess.run([m_train.cost, m_train.accuracy, m_train.lr], feed_dict=feed_dict)
 
-                # train_cost, train_softpred, train_raw_labels \
-                #     = sess.run([m_train.cost, m_train.softpred, m_train.raw_labels], feed_dict=feed_dict)
-                # fpr, tpr, thresholds = metrics.roc_curve(train_raw_labels, train_softpred, pos_label=1)
-                # train_auc = metrics.auc(fpr, tpr)
-
-                train_cost, train_accuracy \
-                    = sess.run([m_train.cost, m_train.accuracy], feed_dict=feed_dict)
-
-                print("Step: %d, train_cost: %.4f, train_accuracy=%4.4f" % (itr, train_cost, train_accuracy*100))
+                print("Step: %d, train_cost: %.4f, train_accuracy= %4.4f lr=%.8f time=%.8f" % (itr, train_cost, train_accuracy*100, print_lr, t))
 
                 train_cost_summary_str = sess.run(cost_summary_op, feed_dict={summary_ph: train_cost})
                 train_accuracy_summary_str = sess.run(accuracy_summary_op, feed_dict={summary_ph: train_accuracy})
@@ -463,7 +467,8 @@ def main(prj_dir=None, model=None, mode=None):
                 train_summary_writer.add_summary(train_accuracy_summary_str, itr)
 
             # if train_data_set.eof_checker():
-            if itr % 50 == 0 and itr > 0:
+
+            if itr % file_len == 0 and itr > 0:
 
                 saver.save(sess, logs_dir + "/model.ckpt", itr)  # model save
                 print('validation start!')
@@ -475,6 +480,8 @@ def main(prj_dir=None, model=None, mode=None):
                 valid_accuracy_summary_str = sess.run(accuracy_summary_op, feed_dict={summary_ph: valid_accuracy})
                 valid_summary_writer.add_summary(valid_cost_summary_str, itr)  # write the train phase summary to event files
                 valid_summary_writer.add_summary(valid_accuracy_summary_str, itr)
+                gs.freeze_graph(prj_dir + '/logs/DNN', prj_dir + '/saved_model/graph/DNN',
+                                'model_1/soft_pred,model_1/raw_labels')
 
                 # full_evaluation(m_valid, sess, valid_batch_size, valid_file_dir, valid_summary_writer, summary_dic, itr)
 
@@ -488,6 +495,15 @@ def main(prj_dir=None, model=None, mode=None):
             return final_softout, final_label
         else:
             return final_softout[0:data_len, :], final_label[0:data_len, :]
+
+
+def get_num_params():
+    num_params = 0
+    for variable in tf.trainable_variables():
+        shape = variable.get_shape()
+        num_params += reduce(mul, [dim.value for dim in shape], 1)
+    return num_params
+
 
 if __name__ == "__main__":
     tf.app.run()
